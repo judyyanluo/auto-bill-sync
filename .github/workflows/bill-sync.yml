@@ -1,0 +1,34 @@
+name: T-Mobile Bill Sync
+
+on:
+  schedule:
+    # Runs daily at 9 AM UTC on days 23-28 of each month
+    - cron: '0 9 23-28 * *'
+  workflow_dispatch:  # allows manual trigger from GitHub UI
+
+jobs:
+  sync-bill:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run bill sync
+        env:
+          TMOBILE_EMAIL: ${{ secrets.TMOBILE_EMAIL }}
+          TMOBILE_PASSWORD: ${{ secrets.TMOBILE_PASSWORD }}
+          ONEDRIVE_CLIENT_ID: ${{ secrets.ONEDRIVE_CLIENT_ID }}
+          ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
+        run: python download_bill.py
