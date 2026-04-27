@@ -32,3 +32,30 @@ jobs:
           ONEDRIVE_CLIENT_ID: ${{ secrets.ONEDRIVE_CLIENT_ID }}
           ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
         run: python download_bill.py
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: downloads/*.png
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload downloaded bill
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bill-pdf
+          path: downloads/*.pdf
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-log
+          path: pipeline.log
+          retention-days: 7
+          if-no-files-found: ignore
