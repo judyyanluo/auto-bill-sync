@@ -35,12 +35,19 @@ def main():
         print("=" * 60)
         input("\nPress Enter after you've logged in successfully...")
 
+        # Also visit the billing page to capture those cookies
+        print("Visiting billing page to capture all cookies...")
+        page.goto("https://www.t-mobile.com/bill/summary")
+        page.wait_for_load_state("domcontentloaded", timeout=30_000)
+        import time
+        time.sleep(3)
+
         # Extract all cookies from the browser context
         all_cookies = context.cookies()
         print(f"\nExtracted {len(all_cookies)} total cookies")
 
         # Filter to only T-Mobile related cookies to stay under GitHub's 48KB limit
-        tmobile_domains = ["t-mobile.com", ".t-mobile.com", "account.t-mobile.com"]
+        tmobile_domains = ["t-mobile.com", ".t-mobile.com", "account.t-mobile.com", "www.t-mobile.com"]
         cookies = []
         for c in all_cookies:
             domain = c.get("domain", "")

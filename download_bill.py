@@ -270,6 +270,7 @@ def login_tmobile(page, email, password):
 def download_bill(email, password):
     """Launch browser, log in, navigate to billing, and download the PDF."""
     DOWNLOAD_DIR.mkdir(exist_ok=True)
+    LOCAL_COOKIES_FILE = Path(__file__).parent / ".tmobile_cookies.json"
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -282,17 +283,29 @@ def download_bill(email, password):
             viewport={"width": 1280, "height": 900},
         )
 
-        # ── Inject saved cookies if available (skip login + 2FA) ──────
+        # ── Load saved cookies (env var OR local file) ────────────────
         use_cookies = False
+
+        # Priority 1: env var (base64-encoded, for CI)
         if TMOBILE_COOKIES:
             try:
                 cookies_json = base64.b64decode(TMOBILE_COOKIES).decode()
                 cookies = json.loads(cookies_json)
                 context.add_cookies(cookies)
-                log.info(f"Injected {len(cookies)} saved cookies — skipping login")
+                log.info(f"Injected {len(cookies)} cookies from env var — skipping login")
                 use_cookies = True
             except Exception as e:
-                log.warning(f"Failed to load cookies, falling back to login: {e}")
+                log.warning(f"Failed to load cookies from env var: {e}")
+
+        # Priority 2: local cookie file (for local cron runs)
+        if not use_cookies and LOCAL_COOKIES_FILE.exists():
+            try:
+                cookies = json.loads(LOCAL_COOKIES_FILE.read_text())
+                context.add_cookies(cookies)
+                log.info(f"Injected {len(cookies)} cookies from local file — skipping login")
+                use_cookies = True
+            except Exception as e:
+                log.warning(f"Failed to load local cookies: {e}")
 
         page = context.new_page()
 
@@ -300,52 +313,63 @@ def download_bill(email, password):
             if not use_cookies:
                 login_tmobile(page, email, password)
 
-            # Navigate to billing page
+                # Save cookies locally after successful login for future runs
+                try:
+                    new_cookies = context.cookies()
+                    tmobile_cookies = [c for c in new_cookies if "t-mobile" in c.get("domain", "")]
+                    LOCAL_COOKIES_FILE.write_text(json.dumps(tmobile_cookies, indent=2))
+                    log.info(f"Saved {len(tmobile_cookies)} cookies to {LOCAL_COOKIES_FILE}")
+                except Exception as e:
+                    log.warning(f"Could not save cookies: {e}")
+
+            # Navigate to billing page — use the correct URL
             log.info("Navigating to billing page ...")
-            page.goto("https://account.t-mobile.com/billing", timeout=30_000)
+            page.goto("https://www.t-mobile.com/bill/summary", timeout=30_000)
             page.wait_for_load_state("domcontentloaded", timeout=30_000)
-            time.sleep(5)
+            time.sleep(3)
             save_debug_screenshot(page, "06_billing_page")
 
             # Check if we got redirected back to login (cookies expired)
             current_url = page.url
+            log.info(f"Current URL after navigation: {current_url}")
             if "login" in current_url or "signin" in current_url:
                 log.error("Session expired — redirected to login page: %s", current_url)
                 if use_cookies:
-                    log.error("Cookies are stale. Re-run extract_cookies.py and update the TMOBILE_COOKIES secret.")
+                    log.error("Cookies are stale. Re-run extract_cookies.py to refresh.")
                 raise RuntimeError("Not authenticated — landed on login page instead of billing")
 
-            # Look for PDF download link across page + iframes
+            # Look for the "Download" link on the bill summary page
+            # Use short timeouts (2s each) to avoid session expiry
             BILL_SELECTORS = [
-                "a[href*='pdf']",
-                "a[href*='bill']",
+                "a:has-text('Download summary bill')",
+                "a:has-text('Download bill')",
                 "a:has-text('Download')",
-                "a:has-text('View PDF')",
-                "a:has-text('View bill')",
+                "button:has-text('Download summary bill')",
+                "button:has-text('Download bill')",
                 "button:has-text('Download')",
-                "button:has-text('View PDF')",
+                "a[href*='pdf']",
+                "a[href*='bill'][href*='download']",
                 "a[href*='document']",
             ]
 
             download_link = None
-            # Try main page first
             for sel in BILL_SELECTORS:
                 try:
-                    download_link = page.wait_for_selector(sel, timeout=5_000)
+                    download_link = page.wait_for_selector(sel, timeout=2_000)
                     if download_link:
                         log.info(f"Found download link via selector: {sel}")
                         break
                 except PlaywrightTimeout:
                     continue
 
-            # Try iframes if not found
+            # Try iframes if not found on main page
             if not download_link:
                 for frame in page.frames:
                     if frame == page.main_frame:
                         continue
                     for sel in BILL_SELECTORS:
                         try:
-                            download_link = frame.wait_for_selector(sel, timeout=3_000)
+                            download_link = frame.wait_for_selector(sel, timeout=2_000)
                             if download_link:
                                 log.info(f"Found download link in iframe: {sel}")
                                 break
@@ -355,9 +379,8 @@ def download_bill(email, password):
                         break
 
             if not download_link:
-                screenshot_path = DOWNLOAD_DIR / "debug_screenshot.png"
-                page.screenshot(path=str(screenshot_path))
-                log.warning(f"Could not find PDF link. Screenshot saved to {screenshot_path}")
+                save_debug_screenshot(page, "debug_screenshot")
+                log.warning("Could not find PDF link. Screenshot saved.")
                 return None
 
             # Download the file

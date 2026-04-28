@@ -1,0 +1,15 @@
+# Secrets
+.tmobile_cookies.json
+token.pickle
+google_credentials.json
+ 
+# Downloads
+downloads/
+ 
+# Logs
+pipeline.log
+ 
+# Python
+__pycache__/
+*.pyc
+.env
