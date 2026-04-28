@@ -248,7 +248,15 @@ def login_tmobile(page, email, password):
     log.info(f"Filled password using selector: {sel}")
     save_debug_screenshot(page, "04_password_filled")
 
-    _click_in_frames(page, NEXT_SELECTORS)
+    LOGIN_SELECTORS = [
+        "button:has-text('Log in')",
+        "input[type='submit']",
+        "button[type='submit']",
+        "button:has-text('Sign in')",
+        "button:has-text('Submit')",
+        "#okta-signin-submit",
+    ]
+    _click_in_frames(page, LOGIN_SELECTORS)
     page.wait_for_load_state("domcontentloaded", timeout=45_000)
     time.sleep(5)
     save_debug_screenshot(page, "05_after_login")
