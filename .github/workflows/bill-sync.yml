@@ -29,6 +29,7 @@ jobs:
         env:
           TMOBILE_EMAIL: ${{ secrets.TMOBILE_EMAIL }}
           TMOBILE_PASSWORD: ${{ secrets.TMOBILE_PASSWORD }}
+          TMOBILE_COOKIES: ${{ secrets.TMOBILE_COOKIES }}
           ONEDRIVE_CLIENT_ID: ${{ secrets.ONEDRIVE_CLIENT_ID }}
           ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
         run: python download_bill.py
