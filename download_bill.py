@@ -19,7 +19,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 import pickle
 
-# Configuration
+# ─── Configuration ────────────────────────────────────────────────────────────
+
 TMOBILE_EMAIL    = os.environ.get("TMOBILE_EMAIL", "")
 TMOBILE_PASSWORD = os.environ.get("TMOBILE_PASSWORD", "")
 DRIVE_FOLDER_ID  = os.environ.get("DRIVE_FOLDER_ID", "")
@@ -29,7 +30,7 @@ TOKEN_FILE       = Path(__file__).parent / "token.pickle"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 MAX_RETRIES      = int(os.environ.get("MAX_RETRIES", "3"))
-RETRY_DELAY      = int(os.environ.get("RETRY_DELAY", "30"))
+RETRY_DELAY      = int(os.environ.get("RETRY_DELAY", "30"))  # seconds
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,7 +43,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# Google Drive helpers
+# ─── Google Drive helpers ─────────────────────────────────────────────────────
 
 def get_drive_service():
     creds = None
@@ -83,7 +84,7 @@ def upload_to_drive(service, file_path, folder_id):
     return f.get("webViewLink", "")
 
 
-# T-Mobile login helpers
+# ─── T-Mobile login helpers ──────────────────────────────────────────────────
 
 def save_debug_screenshot(page, name="debug"):
     DOWNLOAD_DIR.mkdir(exist_ok=True)
@@ -95,12 +96,13 @@ def save_debug_screenshot(page, name="debug"):
 def _find_input_in_frames(page, selectors, timeout=8_000):
     """Search for an input field in the main page AND all iframes.
 
-    T-Mobile login is often rendered inside an Okta iframe. The old code
+    T-Mobile's login is often rendered inside an Okta iframe.  The old code
     only searched the top-level page, which fails when the email/password
     fields live inside an embedded frame.
 
     Returns (frame_or_page, selector) on success, or (None, None).
     """
+    # 1. Try the top-level page first
     for sel in selectors:
         try:
             page.wait_for_selector(sel, timeout=timeout, state="visible")
@@ -108,6 +110,7 @@ def _find_input_in_frames(page, selectors, timeout=8_000):
         except PlaywrightTimeout:
             continue
 
+    # 2. Walk every iframe on the page
     for frame in page.frames:
         if frame == page.main_frame:
             continue
@@ -152,21 +155,24 @@ def login_tmobile(page, email, password):
     log.info("Navigating to T-Mobile login ...")
     page.goto("https://account.t-mobile.com/", timeout=60_000)
 
+    # Dismiss cookie banner if present
     try:
         page.click("button:has-text('Accept')", timeout=5_000)
         log.info("Accepted cookie banner")
     except PlaywrightTimeout:
         pass
 
-    # Wait for DOM to be ready -- do NOT use "networkidle" here because
-    # T-Mobile page keeps making background requests (analytics, etc.)
+    # Wait for DOM to be ready — do NOT use "networkidle" here because
+    # T-Mobile's page keeps making background requests (analytics, etc.)
     # and will never reach networkidle in CI.
     page.wait_for_load_state("domcontentloaded", timeout=30_000)
-    time.sleep(5)
+    time.sleep(5)  # give JS frameworks / iframes extra time to render
     save_debug_screenshot(page, "01_landing")
 
+    # Log all frames for debugging
     log.info("Page frames: %s", [f.url for f in page.frames])
 
+    # ── Email ─────────────────────────────────────────────────────────────
     EMAIL_SELECTORS = [
         "#okta-signin-username",
         "input[name='identifier']",
@@ -178,6 +184,7 @@ def login_tmobile(page, email, password):
         "input[placeholder*='email' i]",
         "input[placeholder*='phone' i]",
         "input[placeholder*='ID' i]",
+        # Broader fallback: any visible text input
         "input[type='text']:visible",
     ]
 
@@ -191,6 +198,7 @@ def login_tmobile(page, email, password):
     log.info(f"Filled email using selector: {sel}")
     save_debug_screenshot(page, "02_email_filled")
 
+    # ── Submit email ──────────────────────────────────────────────────────
     NEXT_SELECTORS = [
         "input[type='submit']",
         "button[type='submit']",
@@ -204,6 +212,25 @@ def login_tmobile(page, email, password):
     time.sleep(3)
     save_debug_screenshot(page, "03_after_email_submit")
 
+    # ── Handle "Log in with Face ID/Fingerprint" interstitial ──────────
+    #    T-Mobile may show a biometric prompt after email. We need to
+    #    click "Log in with password" to get to the password field.
+    PASSWORD_LINK_SELECTORS = [
+        "a:has-text('Log in with password')",
+        "button:has-text('Log in with password')",
+        "a:has-text('Use password')",
+        "button:has-text('Use password')",
+        "[data-testid='password-login']",
+    ]
+    if _click_in_frames(page, PASSWORD_LINK_SELECTORS):
+        log.info("Clicked 'Log in with password' link")
+        page.wait_for_load_state("domcontentloaded", timeout=30_000)
+        time.sleep(3)
+        save_debug_screenshot(page, "03b_after_password_link_click")
+    else:
+        log.info("No biometric interstitial found, proceeding to password field")
+
+    # ── Password ──────────────────────────────────────────────────────────
     PASSWORD_SELECTORS = [
         "#okta-signin-password",
         "input[type='password']",
@@ -227,7 +254,7 @@ def login_tmobile(page, email, password):
     save_debug_screenshot(page, "05_after_login")
 
 
-# Bill download
+# ─── Bill download ────────────────────────────────────────────────────────────
 
 def download_bill(email, password):
     """Launch browser, log in, navigate to billing, and download the PDF."""
@@ -248,12 +275,14 @@ def download_bill(email, password):
         try:
             login_tmobile(page, email, password)
 
+            # Navigate to billing page
             log.info("Navigating to billing page ...")
             page.goto("https://account.t-mobile.com/billing", timeout=30_000)
             page.wait_for_load_state("domcontentloaded", timeout=30_000)
             time.sleep(5)
             save_debug_screenshot(page, "06_billing_page")
 
+            # Look for PDF download link across page + iframes
             BILL_SELECTORS = [
                 "a[href*='pdf']",
                 "a[href*='bill']",
@@ -266,6 +295,7 @@ def download_bill(email, password):
             ]
 
             download_link = None
+            # Try main page first
             for sel in BILL_SELECTORS:
                 try:
                     download_link = page.wait_for_selector(sel, timeout=5_000)
@@ -275,6 +305,7 @@ def download_bill(email, password):
                 except PlaywrightTimeout:
                     continue
 
+            # Try iframes if not found
             if not download_link:
                 for frame in page.frames:
                     if frame == page.main_frame:
@@ -296,6 +327,7 @@ def download_bill(email, password):
                 log.warning(f"Could not find PDF link. Screenshot saved to {screenshot_path}")
                 return None
 
+            # Download the file
             month_tag = datetime.now().strftime("%Y-%m")
             dest = DOWNLOAD_DIR / f"tmobile_bill_{month_tag}.pdf"
             with page.expect_download() as dl_info:
@@ -316,7 +348,7 @@ def download_bill(email, password):
             browser.close()
 
 
-# Entry point with retry
+# ─── Entry point with retry ──────────────────────────────────────────────────
 
 def main():
     if not TMOBILE_EMAIL or not TMOBILE_PASSWORD:
@@ -325,6 +357,7 @@ def main():
 
     log.info("=== T-Mobile Bill Pipeline starting ===")
 
+    # Retry loop
     pdf_path = None
     for attempt in range(1, MAX_RETRIES + 1):
         log.info(f"Attempt {attempt}/{MAX_RETRIES}")
@@ -336,9 +369,10 @@ def main():
             time.sleep(RETRY_DELAY)
 
     if not pdf_path:
-        log.error("Pipeline aborted -- bill not downloaded after %d attempts.", MAX_RETRIES)
+        log.error("Pipeline aborted — bill not downloaded after %d attempts.", MAX_RETRIES)
         sys.exit(1)
 
+    # Upload to Drive
     if DRIVE_FOLDER_ID:
         log.info("Authenticating with Google Drive ...")
         service = get_drive_service()
