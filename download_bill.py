@@ -7,6 +7,8 @@ Run manually or schedule with cron / Task Scheduler.
 import os
 import sys
 import time
+import json
+import base64
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +25,7 @@ import pickle
 
 TMOBILE_EMAIL    = os.environ.get("TMOBILE_EMAIL", "")
 TMOBILE_PASSWORD = os.environ.get("TMOBILE_PASSWORD", "")
+TMOBILE_COOKIES  = os.environ.get("TMOBILE_COOKIES", "")  # base64-encoded cookies
 DRIVE_FOLDER_ID  = os.environ.get("DRIVE_FOLDER_ID", "")
 DOWNLOAD_DIR     = Path(__file__).parent / "downloads"
 CREDENTIALS_FILE = Path(__file__).parent / "google_credentials.json"
@@ -278,10 +281,24 @@ def download_bill(email, password):
             ),
             viewport={"width": 1280, "height": 900},
         )
+
+        # ── Inject saved cookies if available (skip login + 2FA) ──────
+        use_cookies = False
+        if TMOBILE_COOKIES:
+            try:
+                cookies_json = base64.b64decode(TMOBILE_COOKIES).decode()
+                cookies = json.loads(cookies_json)
+                context.add_cookies(cookies)
+                log.info(f"Injected {len(cookies)} saved cookies — skipping login")
+                use_cookies = True
+            except Exception as e:
+                log.warning(f"Failed to load cookies, falling back to login: {e}")
+
         page = context.new_page()
 
         try:
-            login_tmobile(page, email, password)
+            if not use_cookies:
+                login_tmobile(page, email, password)
 
             # Navigate to billing page
             log.info("Navigating to billing page ...")
@@ -289,6 +306,14 @@ def download_bill(email, password):
             page.wait_for_load_state("domcontentloaded", timeout=30_000)
             time.sleep(5)
             save_debug_screenshot(page, "06_billing_page")
+
+            # Check if we got redirected back to login (cookies expired)
+            current_url = page.url
+            if "login" in current_url or "signin" in current_url:
+                log.error("Session expired — redirected to login page: %s", current_url)
+                if use_cookies:
+                    log.error("Cookies are stale. Re-run extract_cookies.py and update the TMOBILE_COOKIES secret.")
+                raise RuntimeError("Not authenticated — landed on login page instead of billing")
 
             # Look for PDF download link across page + iframes
             BILL_SELECTORS = [
