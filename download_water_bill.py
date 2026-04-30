@@ -195,19 +195,10 @@ def login_calwater(page, email, password):
     save_debug_screenshot(page, "03_password_filled")
 
     # ── Submit ────────────────────────────────────────────────────────────
-    # Cal Water uses a plain <button> with text "Log In" (not type=submit)
-    LOGIN_SELECTORS = [
-        "button:has-text('Log In')",
-        "button:has-text('Login')",
-        "button[type='submit']",
-        "input[type='submit']",
-        "button:has-text('Sign In')",
-        "button:has-text('Sign in')",
-        "button:has-text('Submit')",
-    ]
-    if not _click_in_frames(page, LOGIN_SELECTORS):
-        save_debug_screenshot(page, "04_login_button_not_found")
-        raise RuntimeError("Could not click Log In button. Check downloads/calwater_04_login_button_not_found.png")
+    # The "Log In" button is disabled until both fields are filled.
+    # Press Enter on the password field — most reliable way to submit.
+    context.press(sel, "Enter")
+    log.info("Pressed Enter to submit login form")
     page.wait_for_load_state("domcontentloaded", timeout=45_000)
     time.sleep(5)
     save_debug_screenshot(page, "04_after_login")
