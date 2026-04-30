@@ -1,6 +1,6 @@
 """
 California Water Service Bill Downloader
-Downloads the latest bill PDF and uploads it to Google Drive.
+Downloads the latest bill PDF and uploads it to OneDrive.
 Run manually or schedule with cron / Task Scheduler.
 
 Flow: login → "View Bills" → Transactions page → "View Current Bill" → PDF
@@ -15,24 +15,18 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-import pickle
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-CALWATER_EMAIL    = os.environ.get("CALWATER_EMAIL", "")
-CALWATER_PASSWORD = os.environ.get("CALWATER_PASSWORD", "")
-CALWATER_COOKIES  = os.environ.get("CALWATER_COOKIES", "")  # base64-encoded cookies
-DRIVE_FOLDER_ID   = os.environ.get("DRIVE_FOLDER_ID", "")
-DOWNLOAD_DIR      = Path(__file__).parent / "downloads"
-CREDENTIALS_FILE  = Path(__file__).parent / "google_credentials.json"
-TOKEN_FILE        = Path(__file__).parent / "token.pickle"
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+CALWATER_EMAIL          = os.environ.get("CALWATER_EMAIL", "")
+CALWATER_PASSWORD       = os.environ.get("CALWATER_PASSWORD", "")
+CALWATER_COOKIES        = os.environ.get("CALWATER_COOKIES", "")  # base64-encoded cookies
+ONEDRIVE_CLIENT_ID      = os.environ.get("ONEDRIVE_CLIENT_ID", "")
+ONEDRIVE_REFRESH_TOKEN  = os.environ.get("ONEDRIVE_REFRESH_TOKEN", "")
+ONEDRIVE_FOLDER_PATH    = os.environ.get("ONEDRIVE_FOLDER_PATH", "Bills/Water")  # folder in OneDrive
+DOWNLOAD_DIR            = Path(__file__).parent / "downloads"
 
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 RETRY_DELAY = int(os.environ.get("RETRY_DELAY", "30"))  # seconds
@@ -48,45 +42,48 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ─── Google Drive helpers ─────────────────────────────────────────────────────
+# ─── OneDrive helpers (Microsoft Graph API) ──────────────────────────────────
 
-def get_drive_service():
-    creds = None
-    if TOKEN_FILE.exists():
-        with open(TOKEN_FILE, "rb") as f:
-            creds = pickle.load(f)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, "wb") as f:
-            pickle.dump(creds, f)
-    return build("drive", "v3", credentials=creds)
-
-
-def file_exists_in_drive(service, folder_id, filename):
-    query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    files = results.get("files", [])
-    if files:
-        log.info(f"File '{filename}' already exists in Drive, skipping upload.")
-        return True
-    return False
+def get_onedrive_access_token(client_id, refresh_token):
+    """Exchange a refresh token for a short-lived access token."""
+    resp = requests.post(
+        "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        data={
+            "client_id": client_id,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+            "scope": "Files.ReadWrite offline_access",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
 
 
-def upload_to_drive(service, file_path, folder_id):
+def upload_to_onedrive(file_path, access_token, folder_path):
+    """Upload a file to OneDrive at /<folder_path>/<filename>.
+
+    Files larger than 4 MB would need an upload session; bills are small
+    enough for the simple PUT endpoint.
+    """
     filename = file_path.name
-    if folder_id and file_exists_in_drive(service, folder_id, filename):
-        return "(already exists in Drive folder)"
-    meta = {"name": filename}
-    if folder_id:
-        meta["parents"] = [folder_id]
-    media = MediaFileUpload(str(file_path), mimetype="application/pdf")
-    f = service.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
-    log.info(f"Uploaded to Drive: {f.get('webViewLink')}")
-    return f.get("webViewLink", "")
+    upload_path = f"{folder_path.strip('/')}/{filename}" if folder_path else filename
+    url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{upload_path}:/content"
+
+    with open(file_path, "rb") as f:
+        resp = requests.put(
+            url,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/pdf",
+            },
+            data=f.read(),
+            timeout=60,
+        )
+    resp.raise_for_status()
+    web_url = resp.json().get("webUrl", "")
+    log.info(f"Uploaded to OneDrive: {web_url}")
+    return web_url
 
 
 # ─── Cal Water login helpers ──────────────────────────────────────────────────
@@ -379,13 +376,13 @@ def main():
         log.error("Pipeline aborted — bill not downloaded after %d attempts.", MAX_RETRIES)
         sys.exit(1)
 
-    if DRIVE_FOLDER_ID:
-        log.info("Authenticating with Google Drive ...")
-        service = get_drive_service()
-        url = upload_to_drive(service, pdf_path, DRIVE_FOLDER_ID)
+    if ONEDRIVE_CLIENT_ID and ONEDRIVE_REFRESH_TOKEN:
+        log.info("Authenticating with OneDrive ...")
+        token = get_onedrive_access_token(ONEDRIVE_CLIENT_ID, ONEDRIVE_REFRESH_TOKEN)
+        url = upload_to_onedrive(pdf_path, token, ONEDRIVE_FOLDER_PATH)
         log.info(f"=== Done! Bill available at: {url} ===")
     else:
-        log.info("DRIVE_FOLDER_ID not set, skipping upload.")
+        log.info("ONEDRIVE_CLIENT_ID/ONEDRIVE_REFRESH_TOKEN not set, skipping upload.")
         log.info(f"=== Done! Bill saved locally at: {pdf_path} ===")
 
 

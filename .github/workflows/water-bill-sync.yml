@@ -30,7 +30,9 @@ jobs:
           CALWATER_EMAIL: ${{ secrets.CALWATER_EMAIL }}
           CALWATER_PASSWORD: ${{ secrets.CALWATER_PASSWORD }}
           CALWATER_COOKIES: ${{ secrets.CALWATER_COOKIES }}
-          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          ONEDRIVE_CLIENT_ID: ${{ secrets.ONEDRIVE_CLIENT_ID }}
+          ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
+          ONEDRIVE_FOLDER_PATH: ${{ vars.ONEDRIVE_FOLDER_PATH }}
         run: python download_water_bill.py
 
       - name: Upload debug screenshots
