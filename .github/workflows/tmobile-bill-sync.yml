@@ -25,13 +25,12 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install --with-deps chromium
 
-      - name: Run bill sync
+      - name: Run T-Mobile bill sync
         env:
           TMOBILE_EMAIL: ${{ secrets.TMOBILE_EMAIL }}
           TMOBILE_PASSWORD: ${{ secrets.TMOBILE_PASSWORD }}
           TMOBILE_COOKIES: ${{ secrets.TMOBILE_COOKIES }}
-          ONEDRIVE_CLIENT_ID: ${{ secrets.ONEDRIVE_CLIENT_ID }}
-          ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
         run: python download_bill.py
 
       - name: Upload debug screenshots
@@ -48,7 +47,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bill-pdf
-          path: downloads/*.pdf
+          path: downloads/tmobile_bill_*.pdf
           retention-days: 30
           if-no-files-found: ignore
 
