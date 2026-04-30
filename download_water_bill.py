@@ -278,11 +278,16 @@ def download_water_bill(email, password):
 
             current_url = page.url
             log.info(f"Current URL after navigation: {current_url}")
-            if "login" in current_url or "signin" in current_url or "sign-in" in current_url:
-                log.error("Session expired — redirected to login page: %s", current_url)
+            # Cal Water shows the login form inline on /app/billing when unauthenticated
+            # (URL does NOT change), so check page content too
+            page_text = page.inner_text("body")
+            if ("login" in current_url or "signin" in current_url or "sign-in" in current_url
+                    or "Please login to continue" in page_text
+                    or "Log Into Your Account" in page_text):
+                log.error("Not authenticated — login form visible on billing page")
                 if use_cookies:
                     log.error("Cookies are stale. Delete .calwater_cookies.json and re-run.")
-                raise RuntimeError("Not authenticated — landed on login page instead of billing")
+                raise RuntimeError("Not authenticated — login form detected on billing page")
 
             # ── Click "View Current Bill" (first/latest bill entry) ───
             VIEW_BILL_SELECTORS = [
