@@ -354,19 +354,25 @@ def download_water_bill(email, password):
 # ─── Entry point with retry ──────────────────────────────────────────────────
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-retry", action="store_true", help="Disable retries (useful for test runs)")
+    args = parser.parse_args()
+
     if not CALWATER_EMAIL or not CALWATER_PASSWORD:
         log.error("Set CALWATER_EMAIL and CALWATER_PASSWORD environment variables.")
         sys.exit(1)
 
     log.info("=== Cal Water Bill Pipeline starting ===")
 
+    retries = 1 if args.no_retry else MAX_RETRIES
     pdf_path = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        log.info(f"Attempt {attempt}/{MAX_RETRIES}")
+    for attempt in range(1, retries + 1):
+        log.info(f"Attempt {attempt}/{retries}")
         pdf_path = download_water_bill(CALWATER_EMAIL, CALWATER_PASSWORD)
         if pdf_path:
             break
-        if attempt < MAX_RETRIES:
+        if attempt < retries:
             log.warning(f"Retrying in {RETRY_DELAY}s ...")
             time.sleep(RETRY_DELAY)
 
