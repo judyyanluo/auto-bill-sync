@@ -264,12 +264,14 @@ def download_water_bill(email, password):
                 except Exception as e:
                     log.warning(f"Could not save cookies: {e}")
 
-            # ── Navigate to dashboard and check session ───────────────
-            log.info("Navigating to Cal Water dashboard ...")
-            page.goto("https://myaccount.calwater.com/app/dashboard", timeout=30_000)
+            # ── Navigate directly to Billing & Payments page ─────────
+            # /app/billing is the href of the "Billing & Payments" nav item.
+            # Navigating directly avoids relying on JS-rendered dashboard links.
+            log.info("Navigating to Billing & Payments page ...")
+            page.goto("https://myaccount.calwater.com/app/billing", timeout=30_000)
             page.wait_for_load_state("domcontentloaded", timeout=30_000)
             time.sleep(3)
-            save_debug_screenshot(page, "05_dashboard")
+            save_debug_screenshot(page, "05_billing_page")
 
             current_url = page.url
             log.info(f"Current URL after navigation: {current_url}")
@@ -277,24 +279,7 @@ def download_water_bill(email, password):
                 log.error("Session expired — redirected to login page: %s", current_url)
                 if use_cookies:
                     log.error("Cookies are stale. Delete .calwater_cookies.json and re-run.")
-                raise RuntimeError("Not authenticated — landed on login page instead of dashboard")
-
-            # ── Click "View Bills" to go to Transactions page ─────────
-            VIEW_BILLS_SELECTORS = [
-                "a:has-text('View Bills')",
-                "a:has-text('View bills')",
-                "button:has-text('View Bills')",
-                "a[href*='transaction']",
-                "a[href*='billing']",
-            ]
-            if not _click_in_frames(page, VIEW_BILLS_SELECTORS):
-                save_debug_screenshot(page, "06_view_bills_not_found")
-                raise RuntimeError("Could not find 'View Bills' link. Check downloads/calwater_06_view_bills_not_found.png")
-
-            page.wait_for_load_state("domcontentloaded", timeout=30_000)
-            time.sleep(3)
-            save_debug_screenshot(page, "06_transactions_page")
-            log.info(f"Transactions page URL: {page.url}")
+                raise RuntimeError("Not authenticated — landed on login page instead of billing")
 
             # ── Click "View Current Bill" (first/latest bill entry) ───
             VIEW_BILL_SELECTORS = [
