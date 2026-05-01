@@ -25,8 +25,12 @@ CALWATER_PASSWORD       = os.environ.get("CALWATER_PASSWORD", "")
 CALWATER_COOKIES        = os.environ.get("CALWATER_COOKIES", "")  # base64-encoded cookies
 ONEDRIVE_CLIENT_ID      = os.environ.get("ONEDRIVE_CLIENT_ID", "")
 ONEDRIVE_REFRESH_TOKEN  = os.environ.get("ONEDRIVE_REFRESH_TOKEN", "")
-ONEDRIVE_FOLDER_PATH    = os.environ.get("ONEDRIVE_FOLDER_PATH", "Bills/Water")  # folder in OneDrive
 DOWNLOAD_DIR            = Path(__file__).parent / "downloads"
+
+
+def onedrive_folder_path():
+    """Dynamic folder path: tax/<current_year>/Home Office/Water Bill."""
+    return f"tax/{datetime.now().year}/Home Office/Water Bill"
 
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 RETRY_DELAY = int(os.environ.get("RETRY_DELAY", "30"))  # seconds
@@ -44,6 +48,9 @@ log = logging.getLogger(__name__)
 
 # ─── OneDrive helpers (Microsoft Graph API) ──────────────────────────────────
 
+GRAPH_ROOT = "https://graph.microsoft.com/v1.0/me/drive/root"
+
+
 def get_onedrive_access_token(client_id, refresh_token):
     """Exchange a refresh token for a short-lived access token."""
     resp = requests.post(
@@ -60,15 +67,51 @@ def get_onedrive_access_token(client_id, refresh_token):
     return resp.json()["access_token"]
 
 
-def upload_to_onedrive(file_path, access_token, folder_path):
-    """Upload a file to OneDrive at /<folder_path>/<filename>.
+def ensure_onedrive_folder(access_token, folder_path):
+    """Create folder hierarchy in OneDrive if any segment doesn't exist."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    parts = [p for p in folder_path.strip("/").split("/") if p]
+    parent = ""
+    for part in parts:
+        path_so_far = f"{parent}/{part}" if parent else part
+        check = requests.get(f"{GRAPH_ROOT}:/{path_so_far}", headers=headers, timeout=30)
+        if check.status_code == 404:
+            create_url = f"{GRAPH_ROOT}:/{parent}:/children" if parent else f"{GRAPH_ROOT}/children"
+            resp = requests.post(
+                create_url,
+                headers={**headers, "Content-Type": "application/json"},
+                json={"name": part, "folder": {}, "@microsoft.graph.conflictBehavior": "fail"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            log.info(f"Created OneDrive folder: {path_so_far}")
+        elif not check.ok:
+            check.raise_for_status()
+        parent = path_so_far
 
-    Files larger than 4 MB would need an upload session; bills are small
-    enough for the simple PUT endpoint.
-    """
+
+def bill_already_uploaded(access_token, folder_path, year, month):
+    """Return True if any file matching `<year>-<month>-* Water.pdf` exists in folder."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    resp = requests.get(f"{GRAPH_ROOT}:/{folder_path}:/children", headers=headers, timeout=30)
+    if resp.status_code == 404:
+        return False
+    resp.raise_for_status()
+    prefix = f"{year}-{month:02d}-"
+    for item in resp.json().get("value", []):
+        name = item.get("name", "")
+        if name.startswith(prefix) and name.endswith(" Water.pdf"):
+            log.info(f"Bill already in OneDrive: {name}")
+            return True
+    return False
+
+
+def upload_to_onedrive(file_path, access_token, folder_path):
+    """Upload a file to OneDrive at /<folder_path>/<filename>."""
+    ensure_onedrive_folder(access_token, folder_path)
     filename = file_path.name
-    upload_path = f"{folder_path.strip('/')}/{filename}" if folder_path else filename
-    url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{upload_path}:/content"
+    upload_path = f"{folder_path.strip('/')}/{filename}"
+    url = f"{GRAPH_ROOT}:/{upload_path}:/content"
 
     with open(file_path, "rb") as f:
         resp = requests.put(
@@ -84,6 +127,44 @@ def upload_to_onedrive(file_path, access_token, folder_path):
     web_url = resp.json().get("webUrl", "")
     log.info(f"Uploaded to OneDrive: {web_url}")
     return web_url
+
+
+# ─── Bill date extraction ────────────────────────────────────────────────────
+
+import re
+from datetime import date
+
+_DATE_RE = re.compile(
+    r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s*(\d{4})",
+    re.IGNORECASE,
+)
+_MONTHS = {m: i + 1 for i, m in enumerate([
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+])}
+
+
+def _extract_bill_date(link_locator):
+    """Walk up from the View Current Bill link to its row and extract a date.
+
+    Returns a `date` object or None if it can't find one.
+    """
+    try:
+        # Get the text of the closest row/article ancestor that has more text
+        row_text = link_locator.evaluate(
+            "el => { let n = el; while (n && !['TR','LI','ARTICLE'].includes(n.tagName) && n.parentElement) n = n.parentElement; return n ? n.innerText : ''; }"
+        )
+    except Exception as e:
+        log.warning(f"Failed to read row text: {e}")
+        return None
+
+    if not row_text:
+        return None
+    m = _DATE_RE.search(row_text)
+    if not m:
+        return None
+    month = _MONTHS[m.group(1).lower()]
+    return date(int(m.group(3)), month, int(m.group(2)))
 
 
 # ─── Cal Water login helpers ──────────────────────────────────────────────────
@@ -326,9 +407,20 @@ def download_water_bill(email, password):
                 log.warning("Could not find 'View Current Bill' link. Screenshot saved.")
                 return None
 
-            # Download the PDF
-            month_tag = datetime.now().strftime("%Y-%m")
-            dest = DOWNLOAD_DIR / f"calwater_bill_{month_tag}.pdf"
+            # ── Extract the bill issue date from the same row ─────────
+            # Row layout (per screenshot): Type | Date | Account | Details | Amount
+            # The link lives in Details, so walk up to the row and read the date cell.
+            bill_date = _extract_bill_date(download_link)
+            if bill_date:
+                log.info(f"Parsed bill issue date: {bill_date.isoformat()}")
+                filename = f"{bill_date.isoformat()} Water.pdf"
+            else:
+                # Fallback: today's date
+                fallback = datetime.now().date()
+                log.warning(f"Could not parse bill date, using today: {fallback}")
+                filename = f"{fallback.isoformat()} Water.pdf"
+
+            dest = DOWNLOAD_DIR / filename
             with page.expect_download() as dl_info:
                 download_link.click()
             download = dl_info.value
@@ -361,6 +453,21 @@ def main():
 
     log.info("=== Cal Water Bill Pipeline starting ===")
 
+    folder_path = onedrive_folder_path()
+    log.info(f"Target OneDrive folder: {folder_path}")
+
+    # ── Skip everything if this month's bill is already in OneDrive ──
+    onedrive_token = None
+    if ONEDRIVE_CLIENT_ID and ONEDRIVE_REFRESH_TOKEN:
+        log.info("Authenticating with OneDrive (pre-check) ...")
+        onedrive_token = get_onedrive_access_token(ONEDRIVE_CLIENT_ID, ONEDRIVE_REFRESH_TOKEN)
+        now = datetime.now()
+        if bill_already_uploaded(onedrive_token, folder_path, now.year, now.month):
+            log.info("=== Skipping: this month's bill already uploaded ===")
+            return
+    else:
+        log.warning("ONEDRIVE_CLIENT_ID/ONEDRIVE_REFRESH_TOKEN not set; cannot check or upload.")
+
     retries = 1 if args.no_retry else MAX_RETRIES
     pdf_path = None
     for attempt in range(1, retries + 1):
@@ -376,13 +483,12 @@ def main():
         log.error("Pipeline aborted — bill not downloaded after %d attempts.", MAX_RETRIES)
         sys.exit(1)
 
-    if ONEDRIVE_CLIENT_ID and ONEDRIVE_REFRESH_TOKEN:
-        log.info("Authenticating with OneDrive ...")
-        token = get_onedrive_access_token(ONEDRIVE_CLIENT_ID, ONEDRIVE_REFRESH_TOKEN)
-        url = upload_to_onedrive(pdf_path, token, ONEDRIVE_FOLDER_PATH)
+    if onedrive_token:
+        # Refresh token in case the pre-check happened a while ago
+        onedrive_token = get_onedrive_access_token(ONEDRIVE_CLIENT_ID, ONEDRIVE_REFRESH_TOKEN)
+        url = upload_to_onedrive(pdf_path, onedrive_token, folder_path)
         log.info(f"=== Done! Bill available at: {url} ===")
     else:
-        log.info("ONEDRIVE_CLIENT_ID/ONEDRIVE_REFRESH_TOKEN not set, skipping upload.")
         log.info(f"=== Done! Bill saved locally at: {pdf_path} ===")
 
 

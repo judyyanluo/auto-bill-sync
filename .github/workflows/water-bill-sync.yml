@@ -2,8 +2,8 @@ name: Cal Water Bill Sync
 
 on:
   schedule:
-    # Runs daily at 9 AM UTC on days 23-28 of each month
-    - cron: '0 9 23-28 * *'
+    # Runs daily at 9 AM UTC on days 16-18 of each month (bills issued ~17th)
+    - cron: '0 9 16-18 * *'
   workflow_dispatch:  # allows manual trigger from GitHub UI
 
 jobs:
@@ -32,7 +32,6 @@ jobs:
           CALWATER_COOKIES: ${{ secrets.CALWATER_COOKIES }}
           ONEDRIVE_CLIENT_ID: ${{ secrets.ONEDRIVE_CLIENT_ID }}
           ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
-          ONEDRIVE_FOLDER_PATH: ${{ vars.ONEDRIVE_FOLDER_PATH }}
         run: python download_water_bill.py
 
       - name: Upload debug screenshots
@@ -49,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bill-pdf
-          path: downloads/calwater_bill_*.pdf
+          path: downloads/*.pdf
           retention-days: 30
           if-no-files-found: ignore
 
